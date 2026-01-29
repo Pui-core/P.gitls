@@ -1,0 +1,6 @@
+[
+    "./src/main.ts",
+    "./src/style.css",
+    "./src-tauri/src/lib.rs",
+    "./src-tauri/src/main.rs"
+]
