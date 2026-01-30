@@ -551,7 +551,7 @@ fn git_status_clean(
 ) -> Result<bool, String> {
     let s = run_capture(
         git,
-        &["-C", &path_to_string(repo_dir), "status", "--porcelain"],
+        &["-C", &path_to_string(repo_dir), "status", "--porcelain", "--ignore-submodules"],
         None,
     );
     steps.push(s.clone());
@@ -1240,15 +1240,18 @@ fn run_action(req: RunActionRequest) -> ActionOutcome {
             }
         };
 
+        // For pull/merge: auto-stash if dirty (ignore local changes)
         if req.action != "push" && !clean {
-            return fail(
-                "GIT-0102",
-                "WARN",
-                "working tree is dirty (commit/stash first)",
-                Some(path_to_string(&local_path)),
-                steps,
-                &req,
+            let mut stash_step = run_capture(
+                &git,
+                &["-C", &path_to_string(&local_path), "stash", "--include-untracked"],
+                None,
             );
+            // Mark stash as OK if it saved changes (even with permission errors)
+            if stash_step.stdout.contains("Saved working directory") {
+                stash_step.ok = true;
+            }
+            steps.push(stash_step);
         }
 
         // dirtyなら push 前に commit を作る（commitMessage 必須）
@@ -1527,9 +1530,9 @@ fn run_action(req: RunActionRequest) -> ActionOutcome {
         let mut has_commits = head_step.ok;
         steps.push(head_step);
 
-        // status
+        // status (ignore submodules to avoid false positives from nested repos)
         let status_cmd = format!(
-            "cd {} && git status --porcelain",
+            "cd {} && git status --porcelain --ignore-submodules",
             shell_escape_posix_single(&remote_path)
         );
         let st_step = ssh_run(&ssh, &cfg, &status_cmd);
@@ -1548,15 +1551,18 @@ fn run_action(req: RunActionRequest) -> ActionOutcome {
         let clean = st_step.stdout.trim().is_empty();
         steps.push(st_step);
 
+        // For pull/merge: auto-stash if dirty (ignore local changes)
         if req.action != "push" && !clean {
-            return fail(
-                "GIT-0102",
-                "WARN",
-                "working tree is not clean (commit/stash first)",
-                None,
-                steps,
-                &req,
+            let stash_cmd = format!(
+                "cd {} && git stash --include-untracked",
+                shell_escape_posix_single(&remote_path)
             );
+            let mut stash_step = ssh_run(&ssh, &cfg, &stash_cmd);
+            // Mark stash as OK if it saved changes (even with permission errors)
+            if stash_step.stdout.contains("Saved working directory") {
+                stash_step.ok = true;
+            }
+            steps.push(stash_step);
         }
 
         // push & dirty => commitMessage必須で add+commit
